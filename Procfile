@@ -1,1 +1,1 @@
-web: python go.py
+web: gunicorn go:go --log-file -
