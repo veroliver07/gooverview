@@ -1,84 +1,112 @@
-import re
 import requests
+from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup
+import re
+import time
 
-def fetch_ai_overview(query: str) -> dict:
-    """
-    Accepts either a plain search string or a full Google URL.
-    Returns a dict with 'status' and either 'ai_overview' or an error message.
-    """
-    # 1️⃣ Decide which URL to hit
-    if query.lower().startswith("https://www.google.com/search"):
-        url = query
-    else:
-        encoded = requests.utils.quote(query)
-        url = (
-            f"https://www.google.com/search?q={encoded}"
-            "&sourceid=chrome&ie=UTF-8&udm=50&aep=48&cud=0"
-            "&qsubts=1781281494894&source=chrome.crn.obic"
-            "&mstk=AUtExfAUWidfkjLc0ughR9BM5NyqgqvkMKrJvX3Q7I5P0LWIEaMQ1"
-            "E-ceJ0y8gFIJi8frcFen8EZlwMiA1-htAYxjHxbTIHE9im9TfQOzaaA4He-GsaNQTFKGvlJDAYPkS9j4amOLg9etoJHZoY4QKereIbUe9Z6U-EsvQ&csuir=1"
-        )
+app = Flask(__name__)
 
+# Headers to mimic a real browser
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate, br",
+    "DNT": "1",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
+}
+
+def extract_ai_overview(html):
+    """Extract the AI overview text from Google search results HTML."""
+    soup = BeautifulSoup(html, 'html.parser')
+    
+    # Multiple possible selectors for AI overview
+    selectors = [
+        'div[data-attrid="kc:/common/web/ai_answer"]',
+        'div[class*="AIAnswer"]',
+        'div[class*="ai-answer"]',
+        'div[data-hveid*="AI"]',
+        'div[class*="g"] div[style*="border"]',
+        'div[role="heading"] + div',
+        # Fallback: any large text block before the first result
+    ]
+    
+    for selector in selectors:
+        element = soup.select_one(selector)
+        if element:
+            # Clean up the text
+            text = element.get_text(separator='\n', strip=True)
+            if len(text) > 50:  # AI overviews are usually substantial
+                return text
+    
+    # If no specific AI overview found, try to get the featured snippet
+    featured = soup.select_one('div[data-attrid="wa"]')
+    if featured:
+        return featured.get_text(separator='\n', strip=True)
+    
+    return None
+
+@app.route('/')
+def home():
+    return jsonify({
+        "status": "running",
+        "usage": "/ai-overview?q=your+query+here",
+        "example": "/ai-overview?q=who+is+ahmed+shara"
+    })
+
+@app.route('/ai-overview')
+def get_ai_overview():
+    query = request.args.get('q', '')
+    if not query:
+        return jsonify({"error": "No query provided"}), 400
+    
+    # Build the Google search URL
+    search_url = f"https://www.google.com/search?q={query}&udm=50"
+    
     try:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        r = requests.get(url, headers=headers, timeout=10)
-        r.raise_for_status()
-        r.encoding = "utf-8"
-
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        # ------------------------------------------------------------------
-        # 2️⃣  Try the “AI Overview” container
-        # ------------------------------------------------------------------
-        ai_div = (
-            soup.find("div", {"data-attrid": "auto"})
-            or soup.find("div", class_="Z3Vnc")
+        # Send request with browser-like headers
+        response = requests.get(
+            search_url,
+            headers=HEADERS,
+            timeout=15,
+            allow_redirects=True
         )
-        if ai_div:
-            return {
-                "status": "success",
-                "ai_overview": ai_div.get_text(strip=True),
-            }
+        
+        if response.status_code != 200:
+            return jsonify({
+                "error": f"Google returned status {response.status_code}",
+                "query": query
+            }), 500
+        
+        # Extract AI overview
+        overview = extract_ai_overview(response.text)
+        
+        if overview:
+            return jsonify({
+                "query": query,
+                "ai_overview": overview,
+                "source": "google_ai_overview",
+                "success": True
+            })
+        else:
+            return jsonify({
+                "query": query,
+                "ai_overview": None,
+                "message": "No AI overview found for this query",
+                "success": False
+            })
+            
+    except Exception as e:
+        return jsonify({
+            "error": str(e),
+            "query": query
+        }), 500
 
-        # ------------------------------------------------------------------
-        # 3️⃣  Try the snippet of the first search result
-        # ------------------------------------------------------------------
-        snippet = soup.find("span", class_="aCOpRe")
-        if snippet:
-            return {
-                "status": "success",
-                "ai_overview": snippet.get_text(strip=True),
-            }
-
-        # ------------------------------------------------------------------
-        # 4️⃣  Fallback: regex search for “AI Overview …”
-        # ------------------------------------------------------------------
-        m = re.search(
-            r"(?i)AI Overview.*?[.\n]{0,200}", r.text, re.S
-        )
-        if m:
-            return {
-                "status": "success",
-                "ai_overview": m.group(0).strip(),
-            }
-
-        # ------------------------------------------------------------------
-        # 5️⃣  No result – return the default message
-        # ------------------------------------------------------------------
-        return {
-            "status": "success",
-            "ai_overview": "No AI Overview found for this query.",
-        }
-
-    except requests.exceptions.RequestException as exc:
-        return {"status": "error", "message": f"Network error: {exc}"}
-    except Exception as exc:
-        return {"status": "error", "message": f"Unexpected error: {exc}"}
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
