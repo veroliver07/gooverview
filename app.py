@@ -2,13 +2,13 @@ import os
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
-import re
+import json
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Google AI Overview API is running!"
+    return "AI Overview API is running!"
 
 @app.route('/health')
 def health():
@@ -21,106 +21,81 @@ def ai_overview():
         return {"error": "No query provided"}, 400
     
     try:
-        # Better headers to mimic real browser
+        # Method 1: DuckDuckGo Instant Answer API (Always works)
+        url = f"https://api.duckduckgo.com/?q={query}&format=json&pretty=1"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
         
-        # First get Google homepage to set cookies
-        session = requests.Session()
-        session.get("https://www.google.com", headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
         
-        # Set consent cookie
-        session.cookies.set('CONSENT', 'YES+cb.20231020-17-p0.en+FX+', domain='.google.com')
+        # Extract answer from DuckDuckGo
+        answer = None
         
-        # Make search request
-        url = f"https://www.google.com/search?q={query}&hl=en&gl=us&num=10"
-        response = session.get(url, headers=headers, timeout=15)
+        if data.get('AbstractText'):
+            answer = data['AbstractText']
+        elif data.get('Answer'):
+            answer = data['Answer']
+        elif data.get('Definition'):
+            answer = data['Definition']
+        elif data.get('Results') and len(data['Results']) > 0:
+            answer = data['Results'][0].get('Text')
         
-        if response.status_code != 200:
-            return {"error": f"Google returned status {response.status_code}"}, 500
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Method 1: AI Overview specific div
-        overview = None
-        
-        # Try multiple selectors for AI overview
-        ai_selectors = [
-            {'data-attrid': 'kc:/common/web/ai_answer'},
-            {'data-attrid': 'wa'},
-            {'class': 'V3FYCf'},
-            {'class': 'wDYxhc'},
-            {'class': 'c2xzTb'},
-        ]
-        
-        for selector in ai_selectors:
-            div = soup.find('div', selector)
-            if div:
-                overview = div.get_text(strip=True)
-                if len(overview) > 50:  # Make sure it's substantial text
-                    break
-        
-        # Method 2: Look for "AI Overview" heading
-        if not overview:
-            for heading in soup.find_all(['h2', 'h3', 'div']):
-                if heading.get_text(strip=True).lower() in ['ai overview', 'overview', 'ai']:
-                    parent = heading.find_parent('div')
-                    if parent:
-                        overview = parent.get_text(strip=True)
-                        break
-        
-        # Method 3: Get featured snippet
-        if not overview:
-            featured = soup.find('div', {'data-content-feature': '1'})
-            if featured:
-                overview = featured.get_text(strip=True)
-        
-        # Method 4: First result text
-        if not overview:
-            first_result = soup.find('div', class_='g')
-            if first_result:
-                text = first_result.get_text(strip=True)
-                # Clean up the text
-                text = re.sub(r'\s+', ' ', text)
-                if len(text) > 100:
-                    overview = text[:1000]
-        
-        if overview:
-            # Clean up the text
-            overview = re.sub(r'\s+', ' ', overview)
-            overview = overview.strip()
-            
+        if answer:
             return {
                 "query": query,
-                "ai_overview": overview,
+                "ai_overview": answer,
                 "success": True,
-                "length": len(overview),
-                "source": "google_search"
+                "source": "duckduckgo"
             }
-        else:
-            return {
-                "query": query,
-                "ai_overview": None,
-                "success": False,
-                "message": "Google did not show AI Overview for this query. Try a different query.",
-                "note": "AI Overview is only shown for certain queries by Google"
-            }
+        
+        # Method 2: Wikipedia API (Always works)
+        wiki_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{query}"
+        wiki_response = requests.get(wiki_url, headers=headers, timeout=10)
+        
+        if wiki_response.status_code == 200:
+            wiki_data = wiki_response.json()
+            if wiki_data.get('extract'):
+                return {
+                    "query": query,
+                    "ai_overview": wiki_data['extract'][:1000],
+                    "success": True,
+                    "source": "wikipedia"
+                }
+        
+        # Method 3: Scrape DuckDuckGo HTML
+        ddg_url = f"https://html.duckduckgo.com/html/?q={query}"
+        ddg_response = requests.get(ddg_url, headers=headers, timeout=10)
+        
+        if ddg_response.status_code == 200:
+            soup = BeautifulSoup(ddg_response.text, 'html.parser')
+            
+            # Find instant answer
+            result = soup.find('div', class_='result__body')
+            if result:
+                snippet = result.find('a', class_='result__snippet')
+                if snippet:
+                    return {
+                        "query": query,
+                        "ai_overview": snippet.get_text(strip=True),
+                        "success": True,
+                        "source": "duckduckgo_html"
+                    }
+        
+        # Method 4: Google Custom Search (If you have API key)
+        # You can add this later
+        
+        return {
+            "query": query,
+            "ai_overview": None,
+            "success": False,
+            "message": "Could not find answer"
+        }
     
     except Exception as e:
-        return {"error": str(e), "query": query}, 500
+        return {"error": str(e)}, 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port)
