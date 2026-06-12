@@ -2,7 +2,7 @@
 import os
 import uuid
 import requests
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -43,31 +43,42 @@ def chat():
         "language": "en"
     }
     
+    # CRITICAL: Must include ALL cookies and headers exactly as browser does
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Origin": "https://miniapps.ai",
         "Referer": "https://miniapps.ai/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Cookie": f"jwt={JWT_TOKEN}; __Host-miniapps.x-csrf-token={CSRF_TOKEN}; _ga=GA1.1.1787519609.1781282781; __cf_bm=lNIRGKclLLqFUuTzvcmmRXNur_XOUBixtMsxcMCFCR0-1781285957.341665-1.0.1.1-s2GIe77cD_k2KqgixTL5Rn22ebgyeqGVG8dpHSxyIrjEHGcMyq.bfuW.UoNwZQX2X6O5CE3taBGVeJ1mLTrX3w3N6uZYZWL4bgEUsyq03epe8uVxyBWhtDoRu4V9UIsQ",
-        "X-CSRF-Token": CSRF_TOKEN
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Cookie": f"jwt={JWT_TOKEN}; __Host-miniapps.x-csrf-token={CSRF_TOKEN}",
+        "X-CSRF-Token": CSRF_TOKEN,
+        "X-Requested-With": "XMLHttpRequest"
     }
     
-    response = requests.post(
-        API_URL,
-        json=payload,
-        headers=headers
-    )
+    try:
+        response = requests.post(
+            API_URL,
+            json=payload,
+            headers=headers,
+            stream=True,
+            timeout=30
+        )
+        
+        print(f"Status: {response.status_code}")
+        print(f"Response: {response.text[:500]}")
+        
+        # Return streaming response if it's a stream
+        if response.headers.get('content-type', '').startswith('text/event-stream'):
+            def generate():
+                for line in response.iter_lines():
+                    if line:
+                        yield line.decode('utf-8') + '\n'
+            return Response(generate(), mimetype='text/event-stream')
+        
+        return jsonify(response.json())
     
-    # Return streaming response if it's a stream
-    if response.headers.get('content-type', '').startswith('text/event-stream'):
-        def generate():
-            for line in response.iter_lines():
-                if line:
-                    yield line.decode('utf-8') + '\n'
-        return Response(generate(), mimetype='text/event-stream')
-    
-    return jsonify(response.json())
+    except Exception as e:
+        return jsonify({"error": str(e), "statusCode": 500})
 
 @app.route('/new_conversation', methods=['GET'])
 def new_conversation():
@@ -79,7 +90,7 @@ def home():
     return """
     <h1>Uncensored API is running!</h1>
     <p>Send POST requests to /chat endpoint</p>
-    <p>Example: curl -X POST https://your-app.railway.app/chat -H "Content-Type: application/json" -d '{"message": "Hello"}'</p>
+    <p>Example: curl -X POST https://your-app.railway.app/chat -H "Content-Type: application/json" -d '{"message":"Hello"}'</p>
     """
 
 if __name__ == '__main__':
