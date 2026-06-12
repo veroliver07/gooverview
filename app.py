@@ -1,33 +1,19 @@
-#!/usr/bin/env python3
-# app.py
-
-import os
-import json
+import re
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, request, jsonify
 
-# -----------------------------
-# 1️⃣  Flask app instance
-# -----------------------------
-app = Flask(__name__)
-
-# -----------------------------
-# 2️⃣  Helper: fetch AI overview
-# -----------------------------
 def fetch_ai_overview(query: str) -> dict:
     """
     Accepts either a plain search string or a full Google URL.
     Returns a dict with 'status' and either 'ai_overview' or an error message.
     """
-    # Decide which URL to hit
+    # 1️⃣ Decide which URL to hit
     if query.lower().startswith("https://www.google.com/search"):
         url = query
     else:
-        # Encode the raw query
-        encoded_query = requests.utils.quote(query)
+        encoded = requests.utils.quote(query)
         url = (
-            f"https://www.google.com/search?q={encoded_query}"
+            f"https://www.google.com/search?q={encoded}"
             "&sourceid=chrome&ie=UTF-8&udm=50&aep=48&cud=0"
             "&qsubts=1781281494894&source=chrome.crn.obic"
             "&mstk=AUtExfAUWidfkjLc0ughR9BM5NyqgqvkMKrJvX3Q7I5P0LWIEaMQ1"
@@ -49,48 +35,50 @@ def fetch_ai_overview(query: str) -> dict:
 
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # Google may use different selectors; try a couple of common ones
+        # ------------------------------------------------------------------
+        # 2️⃣  Try the “AI Overview” container
+        # ------------------------------------------------------------------
         ai_div = (
             soup.find("div", {"data-attrid": "auto"})
             or soup.find("div", class_="Z3Vnc")
         )
-
         if ai_div:
-            ai_text = ai_div.get_text(strip=True)
-            return {"status": "success", "ai_overview": ai_text}
-        else:
             return {
                 "status": "success",
-                "ai_overview": "No AI Overview found for this query.",
+                "ai_overview": ai_div.get_text(strip=True),
             }
+
+        # ------------------------------------------------------------------
+        # 3️⃣  Try the snippet of the first search result
+        # ------------------------------------------------------------------
+        snippet = soup.find("span", class_="aCOpRe")
+        if snippet:
+            return {
+                "status": "success",
+                "ai_overview": snippet.get_text(strip=True),
+            }
+
+        # ------------------------------------------------------------------
+        # 4️⃣  Fallback: regex search for “AI Overview …”
+        # ------------------------------------------------------------------
+        m = re.search(
+            r"(?i)AI Overview.*?[.\n]{0,200}", r.text, re.S
+        )
+        if m:
+            return {
+                "status": "success",
+                "ai_overview": m.group(0).strip(),
+            }
+
+        # ------------------------------------------------------------------
+        # 5️⃣  No result – return the default message
+        # ------------------------------------------------------------------
+        return {
+            "status": "success",
+            "ai_overview": "No AI Overview found for this query.",
+        }
 
     except requests.exceptions.RequestException as exc:
         return {"status": "error", "message": f"Network error: {exc}"}
     except Exception as exc:
         return {"status": "error", "message": f"Unexpected error: {exc}"}
-
-
-# -----------------------------
-# 3️⃣  API endpoint
-# -----------------------------
-@app.route("/api/overview", methods=["GET"])
-def api_overview():
-    query = request.args.get("q", "").strip()
-    if not query:
-        return (
-            jsonify(
-                {"status": "error", "message": "Missing required query parameter 'q'."}
-            ),
-            400,
-        )
-
-    result = fetch_ai_overview(query)
-    return jsonify(result), 200 if result.get("status") == "success" else 500
-
-
-# -----------------------------
-# 4️⃣  Optional: run locally with Flask dev server
-# -----------------------------
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
