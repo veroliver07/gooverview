@@ -68,3 +68,4 @@ if __name__ == "__main__":
     result = get_google_ai_overview(query)
     
     print(json.dumps(result, indent=2))
+
